@@ -3,7 +3,7 @@ from enum import Enum, auto
 from itertools import count
 
 from nanovllm.sampling_params import SamplingParams
-
+from time import perf_counter
 
 class SequenceStatus(Enum):
     WAITING = auto()
@@ -16,6 +16,9 @@ class Sequence:
     counter = count()
 
     def __init__(self, token_ids: list[int], sampling_params = SamplingParams()):
+        self.arrival_time = perf_counter()
+        self.token_times = []
+        self.num_preemptions = 0
         self.seq_id = next(Sequence.counter)
         self.status = SequenceStatus.WAITING
         self.token_ids = copy(token_ids)
@@ -68,6 +71,7 @@ class Sequence:
         self.token_ids.append(token_id)
         self.last_token = token_id
         self.num_tokens += 1
+        self.token_times.append(perf_counter())
 
     def __getstate__(self):
         last_state = self.last_token if not self.is_prefill else self.token_ids

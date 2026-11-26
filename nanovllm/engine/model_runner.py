@@ -10,8 +10,7 @@ from nanovllm.models.qwen3 import Qwen3ForCausalLM
 from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model
-
-
+from time import perf_counter
 class ModelRunner:
 
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
@@ -31,6 +30,9 @@ class ModelRunner:
         self.model = Qwen3ForCausalLM(hf_config)
         load_model(self.model, config.model)
         self.sampler = Sampler()
+        self._forward_start = torch.cuda.Event(enable_timing=True)
+        self._forward_end = torch.cuda.Event(enable_timing=True)
+        self._sample_end = torch.cuda.Event(enable_timing=True)
         self.warmup_model()
         self.allocate_kv_cache()
         if not self.enforce_eager:
@@ -212,10 +214,29 @@ class ModelRunner:
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
+        t0 = perf_counter()
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
+        t1 = perf_counter()
+
+        self._forward_start.record()
         logits = self.run_model(input_ids, positions, is_prefill)
-        token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
+        self._forward_end.record()
+        t2 = perf_counter()
+
+        sampled = self.sampler(logits, temperatures) if self.rank == 0 else None
+        self._sample_end.record()
+        token_ids = sampled.tolist() if self.rank == 0 else None
+        t3 = perf_counter()
+
+        if self.rank == 0:
+            self.last_timing = {
+                "cpu_prepare": t1 - t0,
+                "cpu_launch": t2 - t1,
+                "cpu_sample_wait": t3 - t2,
+                "gpu_forward": self._forward_start.elapsed_time(self._forward_end) / 1000,
+                "gpu_sample": self._forward_end.elapsed_time(self._sample_end) / 1000,
+            }
         reset_context()
         return token_ids
 
