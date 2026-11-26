@@ -15,6 +15,8 @@ class Scheduler:
         self.block_manager = BlockManager(config.num_kvcache_blocks, config.kvcache_block_size)
         self.waiting: deque[Sequence] = deque()
         self.running: deque[Sequence] = deque()
+        self.finished = []
+        self.preempted = []
 
     def is_finished(self):
         return not self.waiting and not self.running
@@ -77,6 +79,8 @@ class Scheduler:
         seq.is_prefill = True
         self.block_manager.deallocate(seq)
         self.waiting.appendleft(seq)
+        seq.num_preemptions += 1
+        self.preempted.append(seq.seq_id)
 
     def postprocess(self, seqs: list[Sequence], token_ids: list[int], is_prefill: bool):
         for seq, token_id in zip(seqs, token_ids):
@@ -90,3 +94,4 @@ class Scheduler:
                 seq.status = SequenceStatus.FINISHED
                 self.block_manager.deallocate(seq)
                 self.running.remove(seq)
+                self.finished.append(seq)
